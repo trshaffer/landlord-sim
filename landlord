@@ -1,0 +1,568 @@
+#!/usr/bin/env python
+
+import statistics
+import itertools
+import argparse
+import sqlite3
+import random
+import copy
+import time
+import json
+import sys
+import re
+
+from datetime import datetime
+from operator import add
+from functools import cache
+
+from pkg_resources import Requirement
+from conda.models.match_spec import MatchSpec
+from conda.models.version import VersionSpec
+from sortedcontainers import SortedDict, SortedSet, SortedList
+
+#DEBUG = [None]
+VALID = {}
+
+def cleanup(build, parser):
+    out = SortedDict()
+    for k, v in build.items():
+        out[float(k)] = v
+        v['size'] = int(v['size'])
+        #v['depends'] = [parser(x) for x in v['depends']]
+    return out
+
+def sort_meta(meta, parser):
+    return {k: cleanup(v, parser) for k, v in meta.items()}
+
+def abstime(timestamp):
+    return datetime.fromisoformat(timestamp).timestamp()
+
+@cache
+def conda_parse(req):
+    if isinstance(req, MatchSpec):
+        return req
+    else:
+        return MatchSpec(req)
+
+@cache
+def pip_parse(req):
+    if isinstance(req, Requirement):
+        return req
+    else:
+        return Requirement.parse(req)
+
+def cdf(series):
+    series = sorted(series)
+    out = {}
+    seen = 0
+    for k, g in itertools.groupby(series):
+        seen += len(list(g))
+        out[k] = seen/len(series)
+    return out
+
+def dump(series, f):
+    keys = sorted(series.keys())
+    for k in keys:
+        f.write(f'{k}\t{series[k]}\n')
+
+PICK_CONDA_CACHE = {}
+def pick_conda(req):
+    if req in PICK_CONDA_CACHE:
+        if PICK_CONDA_CACHE[req] is None:
+            raise KeyError(req)
+        else:
+            return PICK_CONDA_CACHE[req]
+    PICK_CONDA_CACHE[req] = None
+
+    #print({k: v['version'] for k, v in CONDA[k].items()})
+    for b in reversed(CONDA[req.name].values()):
+        #PICK_CONDA_CACHE[req] = b
+        #break #FIXME
+        #pass
+        if req.version is None or req.version.match(b['version']):
+            #print(f'matched {req}')
+            PICK_CONDA_CACHE[req] = b
+            #print(f'FOUND {b["version"]}')
+            break
+    else:
+        #print(f'fallback {req}')
+        #PICK_CONDA_CACHE[req] = list(itertools.islice(reversed(CONDA[req.name].values()), 1))[0]
+        #PICK_CONDA_CACHE[req] = random.choice(list(CONDA[req.name].values()))
+        #print([CONDA[k][i]['version'] for i in reversed(CONDA[k])])
+        raise KeyError(req)
+
+    return PICK_CONDA_CACHE[req]
+
+PICK_PIP_CACHE = {}
+def pick_pip(req):
+    if req in PICK_PIP_CACHE:
+        if PICK_PIP_CACHE[req] is None:
+            raise KeyError(req)
+        else:
+            return PICK_PIP_CACHE[req]
+    PICK_PIP_CACHE[req] = None
+
+    #print({k: v['version'] for k, v in CONDA[k].items()})
+    for b in reversed(PYPI[req.key].values()):
+        #PICK_PIP_CACHE[req] = b
+        #break #FIXME
+        #pass
+        #print(b['version'])
+        if b['version'] in req:
+            PICK_PIP_CACHE[req] = b
+            #print(f'FOUND {b["version"]}')
+            break
+    else:
+        #PICK_PIP_CACHE[req] = list(itertools.islice(reversed(PYPI[req.key].values()), 1))[0]
+        #PICK_PIP_CACHE[req] = random.choice(list(PYPI[req.key].values()))
+        #print([CONDA[k][i]['version'] for i in reversed(CONDA[k])])
+        raise KeyError(req)
+
+    return PICK_PIP_CACHE[req]
+
+#CLOSURE_CONDA_CACHE = {}
+def closure_conda(req, out, toplevel=False):
+    if isinstance(req, str):
+        req = conda_parse(req)
+
+    #print(f'closure {req}')
+
+    assert(not req.name.startswith('__'))
+
+    if req.name in out and toplevel == False:
+        return
+
+    #if req in CLOSURE_CONDA_CACHE:
+        #if CLOSURE_CONDA_CACHE[req] is None:
+            #print(CLOSURE_CONDA_CACHE)
+            #raise KeyError(req)
+        #else:
+            #return CLOSURE_CONDA_CACHE[req]
+
+    #CLOSURE_CONDA_CACHE[req] = None
+    #out = {}
+
+    p = pick_conda(req)
+    out[req.name] = p
+    for d in p['depends']:
+        if isinstance(d, str):
+            d = conda_parse(d)
+        if d.name.startswith('__'):
+            continue
+        #out.update(closure_conda(d))
+        closure_conda(d, out)
+
+    #CLOSURE_CONDA_CACHE[req] = out
+    #return out
+
+#CLOSURE_PIP_CACHE = {}
+def closure_pip(req, out, toplevel=False):
+    if isinstance(req, str):
+        req = pip_parse(req)
+
+    if req.key in out and toplevel == False:
+        return
+
+    #if req in CLOSURE_PIP_CACHE:
+        #if CLOSURE_PIP_CACHE[req] is None:
+            #raise KeyError(req)
+        #else:
+            #return CLOSURE_PIP_CACHE[req]
+
+    #CLOSURE_PIP_CACHE[req] = None
+    #out = {}
+
+    p = pick_pip(req)
+    out[req.key] = p
+    for d in p['depends']:
+        #out.update(closure_pip(d))
+        closure_pip(d, out)
+
+    #CLOSURE_PIP_CACHE[req] = out
+    #return out
+
+class Spec:
+    _resolve_cache = {}
+    _add_cache = {}
+    _contains_cache = {}
+    _sub_cache = {}
+
+    def __init__(self, conda, pip):
+        self.conda = {}
+        for c in conda:
+            parsed = c if isinstance(c, MatchSpec) else conda_parse(c)
+            self.conda[parsed.name] = parsed
+
+        self.pip = {}
+        for p in pip:
+            parsed = p if isinstance(p, Requirement) else pip_parse(p)
+            self.pip[parsed.key] = parsed
+
+        hash_conda = [('c', x) for x in self.conda.values()]
+        hash_pip = [('p', x) for x in self.pip.values()]
+        self.hash = hash(frozenset(hash_conda + hash_pip))
+
+    def __repr__(self):
+        return f'{type(self).__name__}({list(self.conda.values())}, {list(self.pip.values())})'
+
+    def __hash__(self):
+        return self.hash
+
+    def __eq__(self, other):
+        if hash(self) != hash(other):
+            return False
+        return self.conda == other.conda and self.pip == other.pip
+
+    def __add__(self, other):
+        key = frozenset((self, other))
+        if key in self._add_cache:
+            if self._add_cache is None:
+                raise ValueError
+            else:
+                return self._add_cache[key]
+
+        pip = dict(self.pip)
+        conda = dict(self.conda)
+        for k, v in other.pip.items():
+            if k in pip:
+                if len(pip[k].specs) == 0:
+                    pip[k] = v
+                elif len(v.specs) == 0:
+                    pass
+                elif v != pip[k]:
+                    raise ValueError
+            else:
+                pip[k] = v
+        for k, v in other.conda.items():
+            if k in conda:
+                if conda[k].version is None:
+                    conda[k] = v
+                elif v.version is None:
+                    pass
+                elif v != conda[k]:
+                    raise ValueError
+            else:
+                conda[k] = v
+
+        self._add_cache[key] = Spec(conda.values(), pip.values())
+        return self._add_cache[key]
+
+    def __contains__(self, container):
+        key = (self, container)
+        if key in self._contains_cache:
+            return self._contains_cache[key]
+
+        for k, v in self.pip.items():
+            if not k in container.pip:
+                self._contains_cache[key] = False
+                return False
+            if len(v.specs) == 0:
+                pass
+            elif not container.pip[k]['version'] in v:
+                self._contains_cache[key] = False
+                return False
+        for k, v in self.conda.items():
+            if not k in container.conda:
+                self._contains_cache[key] = False
+                return False
+            if v.version is None:
+                pass
+            elif not v.version.match(container.conda[k]['version']):
+                self._contains_cache[key] = False
+                return False
+        self._contains_cache[key] = True
+        return True
+
+    def __sub__(self, other):
+        key = frozenset((self, other))
+        if key in self._sub_cache:
+            return self._sub_cache[key]
+
+        ka = set(['c' + x for x in self.conda.keys()] + ['p' + x for x in self.pip.keys()])
+        kb = set(['c' + x for x in other.conda.keys()] + ['p' + x for x in other.pip.keys()])
+        self._sub_cache[key] = 1 - len(ka.intersection(kb))/len(ka.union(kb))
+
+        return self._sub_cache[key]
+    __rsub__ = __sub__
+
+    def resolve(self, when):
+        key = self
+        if key in self._resolve_cache:
+            if self._resolve_cache[key] is None:
+                raise KeyError(key)
+            else:
+                return self._resolve_cache[key]
+        self._resolve_cache[key] = None
+
+        #print(self)
+
+        conda_pkgs = {}
+        pip_pkgs = {}
+
+        # don't need full BFS, just do the explicit ones
+        # to ensure laziness only shows up in indirect deps
+        for k, v in self.conda.items():
+            req = conda_parse(v)
+            conda_pkgs[req.name] = pick_conda(req)
+        for k, v in self.pip.items():
+            req = pip_parse(v)
+            pip_pkgs[req.key] = pick_pip(req)
+
+        for k, v in self.conda.items():
+            closure_conda(v, conda_pkgs, toplevel=True)
+        for k, v in self.pip.items():
+            closure_pip(v, pip_pkgs, toplevel=True)
+
+        self._resolve_cache[key] = Container(self, conda_pkgs, pip_pkgs)
+        return self._resolve_cache[key]
+
+class Container:
+    def __init__(self, spec, conda, pip):
+        self.spec = spec
+        self.conda = conda
+        self.pip = pip
+        self.conda_storage = {k: int(v['size']) for k, v in conda.items()}
+        self.pip_storage = {k: int(v['size']) for k, v in pip.items()}
+        self.size = len(conda) + len(pip)
+        self.storage = sum(self.conda_storage.values()) + sum(self.pip_storage.values())
+        hash_conda = [('c', k, v['version']) for k, v in conda.items()]
+        hash_pip = [('p', k, v['version']) for k, v in pip.items()]
+        self.hash = hash(frozenset(hash_conda + hash_pip))
+
+    def __repr__(self):
+        return f'{type(self).__name__}({self.spec}, { {k: v["version"] for k, v in self.conda.items()} }, { {k: v["version"] for k, v in self.pip.items()} })'
+
+    def __eq__(self, other):
+        if self.hash != other.hash:
+            return False
+        return self.conda == other.conda and self.pip == other.pip
+
+    def __hash__(self):
+        return self.hash
+
+
+DB = sqlite3.connect('binder.sqlite').cursor()
+END_DATE = abstime(DB.execute('SELECT timestamp FROM events ORDER BY timestamp DESC').fetchone()[0])
+
+with open('conda.json') as f:
+    CONDA = sort_meta(json.load(f), conda_parse)
+print('loaded conda.json')
+
+with open('pypi.json') as f:
+    PYPI = sort_meta(json.load(f), pip_parse)
+print('loaded pypi.json')
+
+LS = {}
+for ref, ls in DB.execute('SELECT ref, ls FROM spec_files'):
+    LS[ref] = json.loads(ls)
+
+SPLIT_SPECS = {}
+for ref, conda, pip in DB.execute('SELECT ref, conda_packages, pip_packages FROM CLEAN_SPECS'):
+    SPLIT_SPECS[ref] = Spec(
+        json.loads(conda) if conda else [],
+        json.loads(pip) if pip else [],
+    )
+print('scanned repos')
+
+EVENTS = []
+last = None
+for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref, guessed_ref FROM events WHERE provider="GitHub" AND REF IS NOT NULL ORDER BY timestamp ASC'):
+    key = ref or guessed_ref
+    if key is None:
+        continue
+    if not key in SPLIT_SPECS:
+        continue
+    if len(SPLIT_SPECS[key].conda) + len(SPLIT_SPECS[key].pip) == 0:
+        continue
+    if key == last:
+        continue
+    last = key
+
+    ts = abstime(timestamp)
+    EVENTS.append((ts, key))
+print(f'scanned events ({len(EVENTS)})')
+
+
+class Cache:
+    def __init__(self, alpha, log, limit=None):
+        self.alpha = alpha
+        self.containers = {}
+        self.specs = {}
+        self.log = log
+        self.limit = limit
+
+        self._last_storage = 0
+        self._last_unique_storage = 0
+        self.dirty = True
+
+    def update_storage(self):
+        if not self.dirty:
+            return
+
+        self._last_storage = sum([x.storage for x in self.containers])
+        t = {}
+        for c in self.containers:
+            for k, v in c.conda.items():
+                t[('c', k, v['version'])] = int(v['size'])
+            for k, v in c.pip.items():
+                t[('p', k, v['version'])] = int(v['size'])
+        self._last_unique_storage = sum(t.values())
+
+        self.dirty = False
+
+
+    def storage(self):
+        self.update_storage()
+        return self._last_storage
+
+    def unique_storage(self):
+        self.update_storage()
+        return self._last_unique_storage
+
+    def insert(self, ts, spec):
+        c = spec.resolve(ts)
+        assert(not c in self.containers)
+        self.containers[c] = set((spec,))
+        self.specs[spec] = c
+        return c
+
+    def merge(self, ts, old, spec):
+        merged = old.spec + spec
+        #DEBUG[0] = (old.spec, spec, merged)
+        assert(merged != old.spec)
+        new = merged.resolve(ts)
+        #print()
+        #print(old.spec)
+        #print(merged)
+        #print()
+        #print(old)
+        #print(new)
+        assert(new != old)
+        assert(not new in self.containers)
+        assert(not spec in self.specs)
+        t = self.containers.pop(old)
+        self.containers[new] = t
+        #print([hash(x) for x in self.specs])
+        #print(hash(old.spec))
+        t.add(spec)
+        for s in t:
+            self.specs[s] = new
+        return new
+
+    def clean(self):
+        self.update_storage()
+
+        count = 0
+
+        if self.limit <= 0:
+            return count
+
+        while self._last_storage > self.limit:
+            dead = list(itertools.islice(self.containers.keys(), 1))[0]
+            self._last_storage -= dead.storage
+            for s in self.containers[dead]:
+                del self.specs[s]
+            del self.containers[dead]
+            self.dirty = True
+            count += 1
+
+        return count
+
+    def launch(self, ts, commit):
+        inserts = 0
+        merges = 0
+        hits = 0
+        evicts = 0
+        spec = SPLIT_SPECS[commit]
+
+        #print(spec)
+        #print(commit)
+
+        try:
+            initial = spec.resolve(ts)
+            VALID[commit] = True
+        except (KeyError, ValueError) as e:
+            VALID[commit] = False
+            #print(spec)
+            #raise
+            return
+
+        if spec in self.specs:
+            hits += 1
+            picked = self.specs[spec]
+            t = self.containers.pop(picked)
+            self.containers[picked] = t
+        else:
+            for c in self.containers:
+                if c in spec:
+                    hits += 1
+                    picked = c
+                    t = self.containers.pop(c)
+                    t.add(spec)
+                    self.containers[c] = t
+                    self.specs[spec] = c
+                    break
+            else:
+                distances = [(spec - x.spec, x) for x in self.containers]
+                distances.sort(key=lambda x: x[0])
+                self.dirty = True
+                for d in distances:
+                    if d[0] > self.alpha:
+                        continue
+                    try:
+                        #print()
+                        #print(spec)
+                        #print(d[1].spec)
+                        #print(id(d[1]))
+                        picked = self.merge(ts, d[1], spec)
+                        merges += 1
+                        break
+                    except KeyError as e:
+                        #print(e)
+                        #raise
+                        return
+                    except ValueError as e:
+                        #raise
+                        continue
+                else:
+                    try:
+                        picked = self.insert(ts, spec)
+                        inserts += 1
+                    except (ValueError, KeyError) as e:
+                        #raise
+                        return
+
+        evicts = self.clean()
+
+        self.log.write('\t'.join((str(x) for x in (
+            ts, #0
+            commit, #1
+            inserts, #2
+            merges, #3
+            hits, #4
+            evicts, #5
+            len(self.containers), #6
+            self.storage(), #7
+            self.unique_storage(), #8
+            len(spec.conda) + len(spec.pip), #9
+            len(picked.conda) + len(picked.pip), #10
+            initial.size, #11
+            initial.storage, #12
+            picked.size, #13
+            picked.storage, #14
+            len(picked.spec.conda) + len(picked.spec.pip), #15
+        ))) + '\n')
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--log', required=True)
+    parser.add_argument('--alpha', type=float, required=True)
+    parser.add_argument('--limit', type=int, default=0)
+    args = parser.parse_args()
+
+    C = Cache(args.alpha/100.0, open(args.log, 'w'), args.limit * 1e9)
+    for ts, key in EVENTS:
+        C.launch(ts, key)
+
+    print(len([x for x in VALID.values() if x])/len(VALID))
