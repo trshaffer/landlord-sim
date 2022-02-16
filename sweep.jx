@@ -1,0 +1,18 @@
+
+# makeflow -Tsge -B '-q long@@crc_d12chas -pe smp 6' --jx sweep.jx
+
+{
+	"define": {
+		"OUTDIR": "/scratch365/tshaffe1/landlord7/",
+		"LOGFILE": "landlord_%d_%d.log",
+		"ALPHAS": range(40, 101, 2),
+		"LIMITS": [100,  500, 1000, 5000],
+	},
+	"rules": [
+		{
+			"command": format("./launch.sh ./landlord --alpha %d --limit %d --log %s%s", a, i, OUTDIR, format(LOGFILE, a, i)),
+			#"inputs": ["landlord", "launch.sh"],
+			"outputs": [OUTDIR + format(LOGFILE, a, i)],
+		} for a in ALPHAS for i in LIMITS
+	],
+}
