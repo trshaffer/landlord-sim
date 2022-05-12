@@ -29,3 +29,11 @@ way to get everything:
 - pip=20.2.4
 - sortedcontainers=2.3.0
 - sqlite=3.35.5
+
+The `plots/` directory includes gnuplot scripts for generating graphs.
+There's a makefile in that directory to generate everything.
+After generating simulation logs, make summary `.dat` files
+using `summary.py`. These summary files should be written into the
+`plots/` directory. The makefile there expects
+`summary_{100,500,1000,5000}.dat` to exist
+(you'll need to update the makefile if you use different cache sizes).
