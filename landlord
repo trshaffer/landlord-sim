@@ -280,7 +280,15 @@ class Spec:
 
         ka = set(['c' + x for x in self.conda.keys()] + ['p' + x for x in self.pip.keys()])
         kb = set(['c' + x for x in other.conda.keys()] + ['p' + x for x in other.pip.keys()])
-        self._sub_cache[key] = 1 - len(ka.intersection(kb))/len(ka.union(kb))
+        weighted_intersect = 0
+        for k in ka.intersection(kb):
+            x = k[1:]
+            weighted_intersect += self.conda[x]['size']
+        weighted_union = 0
+        for k in ka.union(kb):
+            x = k[1:]
+            weighted_union += self.conda[x]['size']
+        self._sub_cache[key] = 1 - weighted_intersection/weighted_union
 
         return self._sub_cache[key]
     __rsub__ = __sub__
