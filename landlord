@@ -282,12 +282,20 @@ class Spec:
         kb = set(['c' + x for x in other.conda.keys()] + ['p' + x for x in other.pip.keys()])
         weighted_intersect = 0
         for k in ka.intersection(kb):
+            t = k[0]
             x = k[1:]
-            weighted_intersect += self.conda[x]['size']
+            if t == 'c':
+                weighted_intersect += self.conda[x]['size']
+            else:
+                weighted_intersect += self.pip[x]['size']
         weighted_union = 0
         for k in ka.union(kb):
+            t = k[0]
             x = k[1:]
-            weighted_union += self.conda[x]['size']
+            if t == 'c':
+                weighted_intersect += self.conda[x]['size']
+            else:
+                weighted_intersect += self.pip[x]['size']
         self._sub_cache[key] = 1 - weighted_intersection/weighted_union
 
         return self._sub_cache[key]
