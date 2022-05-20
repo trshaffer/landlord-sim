@@ -597,8 +597,8 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, required=True)
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--weighted', type=int, default=0)
-    WEIGHTED = args.weighted
     args = parser.parse_args()
+    WEIGHTED = args.weighted
 
     C = Cache(args.alpha/100.0, open(args.log, 'w'), args.limit * 1e9)
     for ts, key in EVENTS:
