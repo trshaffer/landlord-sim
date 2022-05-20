@@ -23,6 +23,10 @@ from sortedcontainers import SortedDict, SortedSet, SortedList
 #DEBUG = [None]
 VALID = {}
 
+
+WEIGHTED = 0        #0 is normal jaccard, 1 is weighted jaccard
+
+
 def cleanup(build, parser):
     out = SortedDict()
     for k, v in build.items():
@@ -282,23 +286,27 @@ class Spec:
 
         ka = set(['c' + x for x in self.conda.keys()] + ['p' + x for x in self.pip.keys()])
         kb = set(['c' + x for x in other.conda.keys()] + ['p' + x for x in other.pip.keys()])
-        weighted_intersect = 0
-        for k in ka.intersection(kb):
-            t = k[0]
-            x = k[1:]
-            if t == 'c':
-                weighted_intersect += self._all_conda_pkgs[x]
-            else:
-                weighted_intersect += self._all_pip_pkgs[x]
-        weighted_union = 0
-        for k in ka.union(kb):
-            t = k[0]
-            x = k[1:]
-            if t == 'c':
-                weighted_union += self._all_conda_pkgs[x]
-            else:
-                weighted_union += self._all_pip_pkgs[x]
-        self._sub_cache[key] = 1 - weighted_intersect/weighted_union
+        
+        if WEIGHTED == 0:
+            self._sub_cache[key] = 1 - len(ka.intersection(kb))/len(ka.union(kb))
+        else:
+            weighted_intersect = 0
+            for k in ka.intersection(kb):
+                t = k[0]
+                x = k[1:]
+                if t == 'c':
+                    weighted_intersect += self._all_conda_pkgs[x]
+                else:
+                    weighted_intersect += self._all_pip_pkgs[x]
+            weighted_union = 0
+            for k in ka.union(kb):
+                t = k[0]
+                x = k[1:]
+                if t == 'c':
+                    weighted_union += self._all_conda_pkgs[x]
+                else:
+                    weighted_union += self._all_pip_pkgs[x]
+            self._sub_cache[key] = 1 - weighted_intersect/weighted_union
 
         return self._sub_cache[key]
     __rsub__ = __sub__
