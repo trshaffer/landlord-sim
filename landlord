@@ -186,6 +186,8 @@ class Spec:
     _add_cache = {}
     _contains_cache = {}
     _sub_cache = {}
+    _all_conda_pkgs = {}
+    _all_pip_pkgs = {}
 
     def __init__(self, conda, pip):
         self.conda = {}
@@ -285,17 +287,17 @@ class Spec:
             t = k[0]
             x = k[1:]
             if t == 'c':
-                weighted_intersect += self.conda[x]['size']
+                weighted_intersect += self._all_conda_pkgs[x]
             else:
-                weighted_intersect += self.pip[x]['size']
+                weighted_intersect += self._all_pip_pkgs[x]
         weighted_union = 0
         for k in ka.union(kb):
             t = k[0]
             x = k[1:]
             if t == 'c':
-                weighted_union += self.conda[x]['size']
+                weighted_union += self._all_conda_pkgs[x]
             else:
-                weighted_union += self.pip[x]['size']
+                weighted_union += self._all_pip_pkgs[x]
         self._sub_cache[key] = 1 - weighted_intersect/weighted_union
 
         return self._sub_cache[key]
@@ -328,6 +330,17 @@ class Spec:
             closure_conda(v, conda_pkgs, toplevel=True)
         for k, v in self.pip.items():
             closure_pip(v, pip_pkgs, toplevel=True)
+
+        for c in conda_pkgs:
+            if c in self._all_conda_pkgs:
+                continue
+            else:
+                self._all_conda_pkgs[c] = conda_pkgs[c]['size']
+        for p in pip_pkgs:
+            if p in self._all_pip_pkgs:
+                continue
+            else:
+                self._all_pip_pkgs[p] = pip_pkgs[p]['size']
 
         self._resolve_cache[key] = Container(self, conda_pkgs, pip_pkgs)
         return self._resolve_cache[key]
