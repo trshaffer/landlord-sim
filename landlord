@@ -419,7 +419,6 @@ for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref
     EVENTS.append((ts, key))
 print(f'scanned events ({len(EVENTS)})')
 
-
 class Cache:
     def __init__(self, alpha, log, limit=None):
         self.alpha = alpha

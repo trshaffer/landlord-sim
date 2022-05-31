@@ -38,3 +38,12 @@ specs_freq.png
 specs_freq_log_scale.png
 sweep.jx.makeflowlog
 test.jx
+binder.sqlite
+conda.json
+env.yml
+plots-normal-jaccard
+plots
+pypi.json
+sandbox
+sge.wrapper
+sweep.jx.makeflowlog
