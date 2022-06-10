@@ -21,5 +21,5 @@ set label "Upper Compute\nTime Limit" at 0.93,60 font ",10" right
 set arrow from 0.92,40 to 0.82,40
 
 plot "summary_".ARG2.".dat" \
-   using ($1/100):($15*100) with lines title "Cache" ls 1, \
-"" using ($1/100):($3*100) with lines title "Container" ls 2
+   using ($1/100):($16*100) with lines title "Cache" ls 1, \
+"" using ($1/100):($17*100) with lines title "Container" ls 2
