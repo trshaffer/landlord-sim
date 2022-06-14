@@ -10,7 +10,8 @@ import time
 import json
 import sys
 import re
-
+import heapq
+import copy
 from datetime import datetime
 from operator import add
 from functools import cache
@@ -19,6 +20,7 @@ from pkg_resources import Requirement
 from conda.models.match_spec import MatchSpec
 from conda.models.version import VersionSpec
 from sortedcontainers import SortedDict, SortedSet, SortedList
+import matplotlib.pyplot as plt
 
 #DEBUG = [None]
 VALID = {}
@@ -400,9 +402,13 @@ for ref, conda, pip in DB.execute('SELECT ref, conda_packages, pip_packages FROM
         json.loads(pip) if pip else [],
     )
 print('scanned repos')
-
+print(f'{list(SPLIT_SPECS.items())[0]}')
+UNIQUE_SPECS = {}
 EVENTS = []
 last = None
+counter = 0
+percent = 20
+valid_num = -1
 for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref, guessed_ref FROM events WHERE provider="GitHub" AND REF IS NOT NULL ORDER BY timestamp ASC'):
     key = ref or guessed_ref
     if key is None:
@@ -417,7 +423,41 @@ for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref
 
     ts = abstime(timestamp)
     EVENTS.append((ts, key))
+
+    if SPLIT_SPECS[key] not in UNIQUE_SPECS:
+        UNIQUE_SPECS[SPLIT_SPECS[key]] =[1, counter]
+    else:
+        UNIQUE_SPECS[SPLIT_SPECS[key]][0] += 1
+    counter += 1
+    #if counter > percent / 100 * len(EVENTS) and valid_num == -1:
+        #valid_num = len(UNIQUE_SPECS)
+        #print(UNIQUE_SPECS)
 print(f'scanned events ({len(EVENTS)})')
+print(f'total number of unique valid requests ({len(UNIQUE_SPECS)})')
+print(counter)
+valid_num = 0
+specs_freq = []
+for k, v in UNIQUE_SPECS.items():
+    if v[1] < percent / 100 * len(EVENTS):
+        valid_num += 1
+        assert(v[0] >= 1)
+        #if v[0] > 2000:
+            #print(f'{k} :: {v}')
+            #specs_freq.append(2000)
+        #else:
+            #specs_freq.append(v[0])
+        specs_freq.append(v[0])
+specs_freq.sort()
+plt.plot([i for i in range(len(specs_freq))], specs_freq)
+plt.title("Specs frequency")
+plt.ylabel('Count')
+plt.yscale('log')
+plt.savefig('specs_freq_log_scale.png')
+print(f'number of unique valid requests in first {percent}% ({valid_num})')
+
+#with open("UNIQUE_SPECS.dict", 'w') as f:
+#    for k in UNIQUE_SPECS.keys():
+#        f.write(f"{k} : {UNIQUE_SPECS[k]}\n")
 
 class Cache:
     def __init__(self, alpha, log, limit=None):
@@ -589,6 +629,125 @@ class Cache:
             len(picked.spec.conda) + len(picked.spec.pip), #15
         ))) + '\n')
 
+class Agnes:
+    def __init__(self, limit, lazy_resolve, container_ratio):
+        self.ts_to_key = {} #ts -> key
+        self.limit = limit
+        self.lazy_resolve = lazy_resolve
+        self.container_ratio = container_ratio
+        self.points = {}
+        self.final_points = []
+        self.a_hit = [0]
+        self.a_all = [0]
+        self.c_hit = [0]
+        self.c_all = [0]
+
+    def add_point(self, ts, key):
+        if not self.lazy_resolve:
+            spec = SPLIT_SPECS[key]
+            try:
+                resolved_spec = spec.resolve(ts)
+            except:
+                return
+            if resolved_spec in self.points:
+                self.points[resolved_spec] += 1
+            else:
+                self.points[resolved_spec] = 1
+        else:
+            self.ts_to_key[ts] = key
+
+    def cluster(self):
+        if self.lazy_resolve:
+            for ts, key in self.ts_to_key.items():
+                spec = SPLIT_SPECS[key]
+                try:
+                    resolved_spec = spec.resolve(ts)
+                except:
+                    continue
+                if resolved_spec in self.points:
+                    self.points[resolved_spec] += 1
+                else:
+                    self.points[resolved_spec] = 1
+        
+        #cluster
+        list_points = list(self.points.keys())
+        l = len(list_points)
+        print(f'number of points to cluster ({len(list_points)})')
+        
+        distances = []
+        for i in range(l):
+            for j in range(i+1, l):
+                try:
+                    fake_merge = list_points[i].spec + list_points[j].spec
+                except:
+                    distances.append([float('inf'), i, j])
+                else:
+                    distances.append([list_points[i].spec - list_points[j].spec, i, j])
+        heapq.heapify(distances)
+        heap_d = distances
+        removed_set = set()
+        while True:
+            d = heapq.heappop(heap_d)
+            if d[0] == float('inf'):
+                break
+            if d[1] in removed_set or d[2] in removed_set:
+                continue
+            merged = list_points[i].spec + list_points[j].spec
+            resolved = merged.resolve(-1)   #-1 doesnt matter
+            if resolved.storage > self.container_ratio * self.limit:
+                continue
+            self.points[resolved] = self.points[list_points[i]] + self.points[list_points[j]]
+            removed_set.add(i)
+            removed_set.add(j)
+            list_points.append(resolved)
+            for k in range(len(list_points) - 1):
+                if k in removed_set:
+                    continue
+                else:
+                    heapq.heappush(heap_d, [resolved.spec - list_points[k].spec, len(list_points), k])
+
+        ret_list = []
+        storage = 0
+        for i in range(len(list_points)):
+            if i in removed_set:
+                continue
+            ret_list.append([list_points[i], self.points[list_points[i]]])
+        ret_list.sort(key=lambda x : x[1])
+        for i in range(len(ret_list)):
+            assert(ret_list[i].storage < self.limit)
+            storage += ret_list[i].storage
+            if storage <= self.limit:
+                continue
+            else:
+                ret_list = ret_list[:i]
+        self.final_points = ret_list
+        return ret_list 
+        #return containers here
+    
+    def check_hit(self, containers, ts, key, code):
+        if code == 'a':
+            self.hit = self.a_hit
+            self.all = self.a_all
+        else:
+            self.hit = self.c_hit
+            self.all = self.c_all
+        spec = SPLIT_SPECS[key]
+        hit = 0
+        try:
+            resolved_spec = spec.resolve(ts)
+        except:
+            return
+        else:
+            for c in self.final_points:
+                if c in spec:
+                    self.hit.append(self.hit[-1] + 1)
+                    hit = 1
+                    break
+            if hit == 0:
+                self.hit.append(self.hit[-1])
+            self.all.append(self.all[-1] + 1)
+            assert(len(self.hit) == len(self.all))
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -596,11 +755,44 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, required=True)
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--weighted', type=int, default=0)
+    parser.add_argument('--offRatio', type=float, default=0.2)
+    parser.add_argument('--lazyResolve', type=int, default=1)
+    parser.add_argument('--containerRatio', type=float, default=0.05)
     args = parser.parse_args()
     WEIGHTED = args.weighted
 
     C = Cache(args.alpha/100.0, open(args.log, 'w'), args.limit * 1e9)
-    for ts, key in EVENTS:
+    analyzed = 0
+    l = len(EVENTS)
+    containers = None
+    freezed_C = None
+    agnes = Agnes(args.limit * 1e9, args.lazyResolve, args.containerRatio)
+    for i, (ts, key) in enumerate(EVENTS):
+        if i >= args.offRatio * l:
+            if analyzed == 0:
+                analyzed = 1
+                freezed_C = copy.deepcopy(C.containers)
+                containers = agnes.cluster()
+            else:
+                agnes.check_hit(containers, ts, key, 'a') #compare hit rate
+                agnes.check_hit(freezed_C, ts, key, 'c') #compare hit rate
+        else:   #collect data
+            agnes.add_point(ts, key)
         C.launch(ts, key)
+
+    directory = '/afs/crc.nd.edu/group/ccl/work/tphung/landlord-sim/sandbox/'
+    with open(directory+'agnes_hits.log', 'w') as f:
+        f.write(json.dumps(agnes.a_hit))
+    with open(directory+'agnes_all.log', 'w') as f:
+        f.write(json.dumps(agnes.a_all))
+    with open(directory+'landlord_hits.log', 'w') as f:
+        f.write(json.dumps(agnes.c_hit))
+    with open(directory+'landlord_all.log', 'w') as f:
+        f.write(json.dumps(agnes.c_all))
+
+    plt.plot(len(agnes.a_hit), [agnes.a_hit[i]/agnes.a_all[i] for i in range(len(a_hit))], label='agnes')
+    plt.plot(len(agnes.c_hit), [agnes.c_hit[i]/agnes.c_all[i] for i in range(len(c_hit))], label='landlord')
+    plt.legend()
+    plt.savefig(directory+'agnes_vs_landlord_hit_rate.png')
 
     print(len([x for x in VALID.values() if x])/len(VALID))

@@ -47,3 +47,7 @@ pypi.json
 sandbox
 sge.wrapper
 sweep.jx.makeflowlog
+UNIQUE_SPECS.dict
+specs_freq.png
+specs_freq_log_scale.png
+test.jx
