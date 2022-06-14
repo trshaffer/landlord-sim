@@ -61,5 +61,9 @@ print('\t'.join((str(x) for x in (
     max(CACHE_E), # 12
     max(CONTAINER_E), # 13
     CONTAINER_E[-1], #14
-    CACHE_E[-1] #15
+    CACHE_E[-1], #15
+    statistics.median(CACHE_E[-1000:]), # 16
+    statistics.median(CONTAINER_E[-1000:]), # 17
+    statistics.median(UNIQUE_DATA[-1000:]), # 18
+    statistics.median(TOTAL_DATA[-1000:]), # 19
 ))))

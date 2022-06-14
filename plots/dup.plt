@@ -16,5 +16,5 @@ if (ARG2 == "5000") {
 }
 
 plot "summary_".ARG2.".dat" \
-   using ($1/100):($8/1e9) with lines title "Unique Data" ls 1, \
-"" using ($1/100):($9/1e9) with lines title "Total Data" ls 2
+   using ($1/100):($18/1e9) with lines title "Unique Data" ls 1, \
+"" using ($1/100):($19/1e9) with lines title "Total Data" ls 2
