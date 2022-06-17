@@ -15,6 +15,7 @@ import copy
 from datetime import datetime
 from operator import add
 from functools import cache
+import jsonpickle
 
 from pkg_resources import Requirement
 from conda.models.match_spec import MatchSpec
@@ -402,7 +403,6 @@ for ref, conda, pip in DB.execute('SELECT ref, conda_packages, pip_packages FROM
         json.loads(pip) if pip else [],
     )
 print('scanned repos')
-print(f'{list(SPLIT_SPECS.items())[0]}')
 UNIQUE_SPECS = {}
 EVENTS = []
 last = None
@@ -434,7 +434,6 @@ for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref
         #print(UNIQUE_SPECS)
 print(f'scanned events ({len(EVENTS)})')
 print(f'total number of unique valid requests ({len(UNIQUE_SPECS)})')
-print(counter)
 valid_num = 0
 specs_freq = []
 for k, v in UNIQUE_SPECS.items():
@@ -448,12 +447,12 @@ for k, v in UNIQUE_SPECS.items():
             #specs_freq.append(v[0])
         specs_freq.append(v[0])
 specs_freq.sort()
-plt.plot([i for i in range(len(specs_freq))], specs_freq)
-plt.title("Specs frequency")
-plt.ylabel('Count')
-plt.yscale('log')
-plt.savefig('specs_freq_log_scale.png')
-print(f'number of unique valid requests in first {percent}% ({valid_num})')
+#plt.plot([i for i in range(len(specs_freq))], specs_freq)
+#plt.title("Specs frequency")
+#plt.ylabel('Count')
+#plt.yscale('log')
+#plt.savefig('specs_freq_log_scale.png')
+#print(f'number of unique valid requests in first {percent}% ({valid_num})')
 
 #with open("UNIQUE_SPECS.dict", 'w') as f:
 #    for k in UNIQUE_SPECS.keys():
@@ -630,17 +629,19 @@ class Cache:
         ))) + '\n')
 
 class Agnes:
-    def __init__(self, limit, lazy_resolve, container_ratio):
+    def __init__(self, limit, lazy_resolve, container_ratio, num_samples, num_iters):
         self.ts_to_key = {} #ts -> key
         self.limit = limit
-        self.lazy_resolve = lazy_resolve
+        self.lazy_resolve = lazy_resolve    #resolve requests to container immediately or not
         self.container_ratio = container_ratio
-        self.points = {}
-        self.final_points = []
-        self.a_hit = [0]
-        self.a_all = [0]
-        self.c_hit = [0]
-        self.c_all = [0]
+        self.num_samples = num_samples
+        self.num_iters = num_iters
+        self.points = {}    #all containers
+        self.final_points = []  #final containers
+        self.a_hit = [0]    #agnes hits over time
+        self.a_all = [0]    #agnes all over time
+        self.c_hit = [0]    #landlord hits over time
+        self.c_all = [0]    #landlord all over time
 
     def add_point(self, ts, key):
         if not self.lazy_resolve:
@@ -674,24 +675,91 @@ class Agnes:
         l = len(list_points)
         print(f'number of points to cluster ({len(list_points)})')
         
-        distances = []
-        for i in range(l):
-            for j in range(i+1, l):
-                try:
-                    fake_merge = list_points[i].spec + list_points[j].spec
+        removed = set()  #two points when merged are removed from above list
+        for i in range(self.num_iters):
+            print(f'iteration {i}')
+            distances = {}
+            
+            #sampling distances
+            while len(distances) < self.num_samples:
+                ind_cont1 = random.randint(0, len(list_points) - 1)
+                ind_cont2 = random.randint(0, len(list_points) - 1)
+                if ind_cont1 == ind_cont2:
+                    continue
+                if (ind_cont1, ind_cont2) in distances:
+                    continue
+                if ind_cont1 in removed or ind_cont2 in removed:
+                    continue
+                try:    #see if mergeable
+                    fake_merge = list_points[ind_cont1].spec + list_points[ind_cont2].spec
                 except:
-                    distances.append([float('inf'), i, j])
+                    #distances[(ind_cont1, ind_cont2)] = float('inf')
+                    continue
                 else:
-                    distances.append([list_points[i].spec - list_points[j].spec, i, j])
+                    distances[(ind_cont1, ind_cont2)] = list_points[ind_cont1].spec - list_points[ind_cont2].spec
+
+            #merge closest
+            distances = [[v, k[0], k[1]] for k, v in distances.items()]
+            #distances.sort(key=lambda x:x[0])
+
+            #min_pair = distances[0]
+            pair = min(distances, key=lambda x:x[0])
+            merged = list_points[pair[1]].spec + list_points[pair[2]].spec
+            resolved = merged.resolve(-1)
+            if resolved.storage > self.container_ratio * self.limit:
+                continue
+            #add new point and its frequency/popularity
+            self.points[resolved] = self.points[list_points[pair[1]]] + self.points[list_points[pair[2]]]
+            #remove two merged points
+            removed.add(pair[1])
+            removed.add(pair[2])
+            list_points.append(resolved)
+
+        print('trimming the clustered containers')
+        ret_list = []
+        storage = 0
+        for i in range(len(list_points)):
+            if i in removed:
+                continue
+            ret_list.append([list_points[i], self.points[list_points[i]]])
+        ret_list.sort(key=lambda x : x[1], reverse=True)
+        for i in range(len(ret_list)):
+            assert(ret_list[i][0].storage < self.limit)
+            storage += ret_list[i][0].storage
+            if storage <= self.limit:
+                continue
+            else:
+                ret_list = ret_list[:i]
+                break
+        self.final_points = ret_list
+        assert(sum([ret_list[i][0].storage for i in range(len(ret_list))]) <= self.limit)
+        ret_list = [ret_list[i][0] for i in range(len(ret_list))]
+        return ret_list
+
+        #### function ends here ####
+        trash = '''
+        assert(len(distances) == self.num_samples)
+        #for i in range(l):
+        #    for j in range(i+1, l):
+        #        try:
+        #            fake_merge = list_points[i].spec + list_points[j].spec
+        #        except:
+        #            distances.append([float('inf'), i, j])
+        #        else:
+        #            distances.append([list_points[i].spec - list_points[j].spec, i, j])
+        print('heapifying list of distances')
         heapq.heapify(distances)
         heap_d = distances
         removed_set = set()
+        num_dist_processed = 0
         while True:
             d = heapq.heappop(heap_d)
             if d[0] == float('inf'):
                 break
             if d[1] in removed_set or d[2] in removed_set:
                 continue
+            i = d[1]
+            j = d[2]
             merged = list_points[i].spec + list_points[j].spec
             resolved = merged.resolve(-1)   #-1 doesnt matter
             if resolved.storage > self.container_ratio * self.limit:
@@ -714,39 +782,44 @@ class Agnes:
             ret_list.append([list_points[i], self.points[list_points[i]]])
         ret_list.sort(key=lambda x : x[1])
         for i in range(len(ret_list)):
-            assert(ret_list[i].storage < self.limit)
-            storage += ret_list[i].storage
+            assert(ret_list[i][0].storage < self.limit)
+            storage += ret_list[i][0].storage
             if storage <= self.limit:
                 continue
             else:
                 ret_list = ret_list[:i]
+                break
         self.final_points = ret_list
-        return ret_list 
+        assert(sum([ret_list[i][0].storage for i in range(len(ret_list))]) <= self.limit)
+        return ret_list
         #return containers here
-    
+        '''
+
     def check_hit(self, containers, ts, key, code):
         if code == 'a':
-            self.hit = self.a_hit
-            self.all = self.a_all
+            num_hit = self.a_hit
+            num_all = self.a_all
         else:
-            self.hit = self.c_hit
-            self.all = self.c_all
+            num_hit = self.c_hit
+            num_all = self.c_all
         spec = SPLIT_SPECS[key]
         hit = 0
         try:
             resolved_spec = spec.resolve(ts)
         except:
+            #print("can't resolve.")
             return
         else:
-            for c in self.final_points:
+            #print("resolve successfully.")
+            for c in containers:
                 if c in spec:
-                    self.hit.append(self.hit[-1] + 1)
+                    num_hit.append(num_hit[-1] + 1)
                     hit = 1
                     break
             if hit == 0:
-                self.hit.append(self.hit[-1])
-            self.all.append(self.all[-1] + 1)
-            assert(len(self.hit) == len(self.all))
+                num_hit.append(num_hit[-1])
+            num_all.append(num_all[-1] + 1)
+            assert(len(num_hit) == len(num_all))
 
 
 if __name__ == '__main__':
@@ -758,41 +831,58 @@ if __name__ == '__main__':
     parser.add_argument('--offRatio', type=float, default=0.2)
     parser.add_argument('--lazyResolve', type=int, default=1)
     parser.add_argument('--containerRatio', type=float, default=0.05)
+    parser.add_argument('--numSamples', type=int, default=100)
+    parser.add_argument('--numIters', type=int, default=10)
+    parser.add_argument('--runFullLL', type=int, default=0)
     args = parser.parse_args()
     WEIGHTED = args.weighted
+
+    random.seed(6162022)
 
     C = Cache(args.alpha/100.0, open(args.log, 'w'), args.limit * 1e9)
     analyzed = 0
     l = len(EVENTS)
     containers = None
     freezed_C = None
-    agnes = Agnes(args.limit * 1e9, args.lazyResolve, args.containerRatio)
+    agnes = Agnes(args.limit * 1e9, args.lazyResolve, args.containerRatio, args.numSamples, args.numIters)
+    prefix_dir = 'sandbox/'
     for i, (ts, key) in enumerate(EVENTS):
         if i >= args.offRatio * l:
             if analyzed == 0:
                 analyzed = 1
-                freezed_C = copy.deepcopy(C.containers)
                 containers = agnes.cluster()
+                freezed_C = list(C.containers.keys())
+                with open(prefix_dir + 'landlord_20.containers' + args.log, 'w') as f:
+                    f.write(jsonpickle.encode(freezed_C))
+                with open(prefix_dir + 'agnes_20.containers' + args.log, 'w') as f:
+                    f.write(jsonpickle.encode(containers))
+                print('done dumping containers to files')
             else:
+                if i % 100000 == 0:
+                    print(f'iteration for events ({i})')
                 agnes.check_hit(containers, ts, key, 'a') #compare hit rate
                 agnes.check_hit(freezed_C, ts, key, 'c') #compare hit rate
         else:   #collect data
+            pass
             agnes.add_point(ts, key)
-        C.launch(ts, key)
+        #launch as usual before percentage mark, run full if chosen
+        if (analyzed == 1 and args.runFullLL) or analyzed == 0:
+            C.launch(ts, key)
 
-    directory = '/afs/crc.nd.edu/group/ccl/work/tphung/landlord-sim/sandbox/'
-    with open(directory+'agnes_hits.log', 'w') as f:
+    #directory = '/afs/crc.nd.edu/group/ccl/work/tphung/landlord-sim/sandbox/'
+    directory = prefix_dir
+    with open(directory+'agnes_hits.log'+args.log, 'w') as f:
         f.write(json.dumps(agnes.a_hit))
-    with open(directory+'agnes_all.log', 'w') as f:
+    with open(directory+'agnes_all.log'+args.log, 'w') as f:
         f.write(json.dumps(agnes.a_all))
-    with open(directory+'landlord_hits.log', 'w') as f:
+    with open(directory+'landlord_hits.log'+args.log, 'w') as f:
         f.write(json.dumps(agnes.c_hit))
-    with open(directory+'landlord_all.log', 'w') as f:
+    with open(directory+'landlord_all.log'+args.log, 'w') as f:
         f.write(json.dumps(agnes.c_all))
 
-    plt.plot(len(agnes.a_hit), [agnes.a_hit[i]/agnes.a_all[i] for i in range(len(a_hit))], label='agnes')
-    plt.plot(len(agnes.c_hit), [agnes.c_hit[i]/agnes.c_all[i] for i in range(len(c_hit))], label='landlord')
+    plt.plot(range(1, len(agnes.a_hit)), [agnes.a_hit[i]/agnes.a_all[i] for i in range(1, len(agnes.a_hit))], label='agnes')
+    plt.plot(range(1, len(agnes.c_hit)), [agnes.c_hit[i]/agnes.c_all[i] for i in range(1, len(agnes.c_hit))], label='landlord')
     plt.legend()
-    plt.savefig(directory+'agnes_vs_landlord_hit_rate.png')
+    plt.savefig(directory+args.log+'agnes_vs_landlord_hit_rate.png')
 
     print(len([x for x in VALID.values() if x])/len(VALID))
