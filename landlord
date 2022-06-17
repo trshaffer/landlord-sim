@@ -25,6 +25,7 @@ VALID = {}
 
 
 WEIGHTED = 0        #0 is normal jaccard, 1 is weighted jaccard
+GUESSED = False
 
 
 def cleanup(build, parser):
@@ -404,7 +405,10 @@ print('scanned repos')
 EVENTS = []
 last = None
 for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref, guessed_ref FROM events WHERE provider="GitHub" AND REF IS NOT NULL ORDER BY timestamp ASC'):
-    key = ref or guessed_ref
+    if GUESSED:
+        key = ref or guessed_ref
+    else:
+        key = ref
     if key is None:
         continue
     if not key in SPLIT_SPECS:
@@ -597,8 +601,10 @@ if __name__ == '__main__':
     parser.add_argument('--alpha', type=float, required=True)
     parser.add_argument('--limit', type=int, default=0)
     parser.add_argument('--weighted', type=int, default=0)
+    parser.add_argument('--guessed', action="store_true")
     args = parser.parse_args()
     WEIGHTED = args.weighted
+    GUESSED = args.guessed
 
     C = Cache(args.alpha/100.0, open(args.log, 'w'), args.limit * 1e9)
     for ts, key in EVENTS:
