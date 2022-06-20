@@ -28,6 +28,7 @@ VALID = {}
 
 
 WEIGHTED = 0        #0 is normal jaccard, 1 is weighted jaccard
+GUESSED = False
 
 
 def cleanup(build, parser):
@@ -410,7 +411,10 @@ counter = 0
 percent = 20
 valid_num = -1
 for timestamp, spec, ref, guessed_ref in DB.execute('SELECT timestamp, spec, ref, guessed_ref FROM events WHERE provider="GitHub" AND REF IS NOT NULL ORDER BY timestamp ASC'):
-    key = ref or guessed_ref
+    if GUESSED:
+        key = ref or guessed_ref
+    else:
+        key = ref
     if key is None:
         continue
     if not key in SPLIT_SPECS:
@@ -834,8 +838,11 @@ if __name__ == '__main__':
     parser.add_argument('--numSamples', type=int, default=100)
     parser.add_argument('--numIters', type=int, default=10)
     parser.add_argument('--runFullLL', type=int, default=0)
+    parser.add_argument('--guessed', action="store_true")
+
     args = parser.parse_args()
     WEIGHTED = args.weighted
+    GUESSED = args.guessed
 
     random.seed(6162022)
 
