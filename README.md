@@ -30,6 +30,14 @@ way to get everything:
 - sortedcontainers=2.3.0
 - sqlite=3.35.5
 
+Instructions:
+1) gunzip conda and pypi
+2) download binder.sqlite from link above
+3) conda create -n sth 5 packages above
+3) ./launch.sh (change path to conda envri)
+4) ./landlord (may not work, check path) (< 1h)
+5) ./summary.py for summary from running ./landlord sweeps -> .dat files -> gnuplot these
+
 The `plots/` directory includes gnuplot scripts for generating graphs.
 There's a makefile in that directory to generate everything.
 After generating simulation logs, make summary `.dat` files

@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 
-# for i in 0 100 500 1000 5000; do for a in $(seq 40 5 100); do (echo -ne "$a\t"; ./summary.py < /scratch365/tshaffe1/landlord5/landlord_${a}_${i}.log) | tee -a summary/slow/summary_${i}.dat; done; done
+# for i in 100 500 1000 5000; do for a in $(seq 0 2 101); do (echo -ne "$a\t"; mkdir -p summary/slow/; ./summary.py < /scratch365/tphung/landlord1/landlord_${a}_${i}.log) | tee -a summary/slow/summary_${i}.dat; done; done
 
 import fileinput
 import statistics
