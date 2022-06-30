@@ -3,7 +3,7 @@
 # line styles
 set style line 1 dt 1 lc rgb '#E41A1C' # red
 set style line 2 dt 2 lc rgb '#377EB8' # blue
-set style line 3 dt 3 lc rgb '#4DAF4A' # green
+set style line 3 dt "." lw 2 lc rgb '#4DAF4A' # green
 set style line 4 dt 4 lc rgb '#984EA3' # purple
 set style line 5 dt 5 lc rgb '#FF7F00' # orange
 set style line 6 dt 6 lc rgb '#FFFF33' # yellow
